@@ -30,27 +30,30 @@ async function simulateHumanBehavior(page) {
   console.log('人类行为模拟完成');
 }
 
+// 检查是否在 Cloudflare 挑战页面
+async function isCloudflareChallenge(page) {
+  const title = await page.title();
+  const url = page.url();
+  const pageContent = await page.content();
+  
+  return title.includes('Just a moment') || 
+         title.includes('Checking') || 
+         title.includes('Please Wait') ||
+         url.includes('challenges') ||
+         pageContent.includes('cf-browser-verification') ||
+         pageContent.includes('cf_chl_prog');
+}
+
 // 等待 Cloudflare 挑战通过
-async function waitForCloudflareChallenge(page, timeout = 45000) {
+async function waitForCloudflareChallenge(page, timeout = 60000) {
   console.log('等待 Cloudflare 挑战...');
   
   const startTime = Date.now();
   
   while (Date.now() - startTime < timeout) {
-    // 检查是否还在挑战页面
-    const title = await page.title();
-    const url = page.url();
-    const pageContent = await page.content();
+    const isChallenge = await isCloudflareChallenge(page);
     
-    // 如果页面标题不包含挑战相关关键词，且页面内容包含登录表单或仪表板，则认为通过
-    if ((!title.includes('Checking') && 
-        !title.includes('Please Wait') && 
-        !title.includes('Just a moment') &&
-        !url.includes('challenges')) ||
-        pageContent.includes('email') ||
-        pageContent.includes('password') ||
-        pageContent.includes('Login') ||
-        pageContent.includes('Dashboard')) {
+    if (!isChallenge) {
       console.log('Cloudflare 挑战已通过');
       return true;
     }
@@ -64,7 +67,7 @@ async function waitForCloudflareChallenge(page, timeout = 45000) {
 
 async function login() {
   const browser = await puppeteer.launch({
-    headless: true, // 使用传统的 headless 模式
+    headless: true,
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
@@ -93,18 +96,11 @@ async function login() {
   });
 
   try {
-    console.log('正在访问网站...');
+    console.log('正在访问登录页面...');
     
-    // 先访问一个中性页面，让 Cloudflare 先验证
-    await page.goto('https://www.google.com', { 
-      waitUntil: 'networkidle0',
-      timeout: 30000 
-    });
-    
-    await delay(2000);
-    
-    // 现在访问目标网站
-    await page.goto(process.env.WEBSITE_URL, { 
+    // 直接访问登录页面
+    const loginUrl = `${process.env.WEBSITE_URL}/login`;
+    await page.goto(loginUrl, { 
       waitUntil: 'networkidle0',
       timeout: 60000 
     });
@@ -115,7 +111,7 @@ async function login() {
     // 模拟人类行为
     await simulateHumanBehavior(page);
     
-    // 等待登录表单加载，使用多种选择器
+    // 等待登录表单加载
     console.log('等待登录表单...');
     
     // 尝试多种选择器
@@ -127,7 +123,7 @@ async function login() {
     
     for (const selector of emailSelectors) {
       try {
-        await page.waitForSelector(selector, { timeout: 5000 });
+        await page.waitForSelector(selector, { timeout: 10000 });
         emailField = selector;
         break;
       } catch (e) {
@@ -137,7 +133,7 @@ async function login() {
     
     for (const selector of passwordSelectors) {
       try {
-        await page.waitForSelector(selector, { timeout: 5000 });
+        await page.waitForSelector(selector, { timeout: 10000 });
         passwordField = selector;
         break;
       } catch (e) {
@@ -146,50 +142,40 @@ async function login() {
     }
     
     if (!emailField || !passwordField) {
-      // 如果没找到标准选择器，尝试通过页面内容查找
-      const pageContent = await page.content();
-      if (pageContent.includes('@') || pageContent.includes('user') || pageContent.includes('login')) {
-        console.log('检测到登录页面但未找到标准表单，尝试继续...');
-      } else {
-        throw new Error('未找到登录表单');
-      }
+      throw new Error('未找到登录表单');
     }
     
-    if (emailField) {
-      console.log('输入邮箱...');
-      await page.click(emailField);
-      await delay(500);
-      
-      // 清空字段并输入
-      await page.evaluate((selector) => {
-        const element = document.querySelector(selector);
-        if (element) element.value = '';
-      }, emailField);
-      
-      // 模拟人类输入
-      const username = process.env.USERNAME;
-      for (let char of username) {
-        await page.type(emailField, char, { delay: 50 + Math.random() * 100 });
-      }
+    console.log('输入邮箱...');
+    await page.click(emailField);
+    await delay(500);
+    
+    // 清空字段并输入
+    await page.evaluate((selector) => {
+      const element = document.querySelector(selector);
+      if (element) element.value = '';
+    }, emailField);
+    
+    // 模拟人类输入
+    const username = process.env.USERNAME;
+    for (let char of username) {
+      await page.type(emailField, char, { delay: 50 + Math.random() * 100 });
     }
     
     await delay(1000 + Math.random() * 1000);
     
-    if (passwordField) {
-      console.log('输入密码...');
-      await page.click(passwordField);
-      await delay(500);
-      
-      await page.evaluate((selector) => {
-        const element = document.querySelector(selector);
-        if (element) element.value = '';
-      }, passwordField);
-      
-      // 模拟人类输入
-      const password = process.env.PASSWORD;
-      for (let char of password) {
-        await page.type(passwordField, char, { delay: 50 + Math.random() * 100 });
-      }
+    console.log('输入密码...');
+    await page.click(passwordField);
+    await delay(500);
+    
+    await page.evaluate((selector) => {
+      const element = document.querySelector(selector);
+      if (element) element.value = '';
+    }, passwordField);
+    
+    // 模拟人类输入
+    const password = process.env.PASSWORD;
+    for (let char of password) {
+      await page.type(passwordField, char, { delay: 50 + Math.random() * 100 });
     }
     
     // 再次模拟人类行为
@@ -222,48 +208,77 @@ async function login() {
     }
     
     if (!submitButton) {
-      // 如果没找到按钮，尝试通过表单提交
-      const form = await page.$('form');
-      if (form) {
-        console.log('通过表单提交登录...');
-        await form.evaluate(form => form.submit());
-      } else {
-        throw new Error('未找到登录按钮或表单');
-      }
-    } else {
-      console.log('点击登录按钮...');
-      await page.click(submitButton);
+      throw new Error('未找到登录按钮');
     }
     
-    // 等待页面变化
-    console.log('等待登录结果...');
-    await delay(8000);
+    console.log('点击登录按钮...');
     
-    // 检查是否重定向
+    // 在点击登录前保存当前状态
+    const beforeLoginUrl = page.url();
+    
+    await page.click(submitButton);
+    
+    // 等待可能的导航或页面变化
+    console.log('等待登录处理...');
+    await delay(5000);
+    
+    // 检查是否出现了 Cloudflare 挑战
+    const hasChallengeAfterLogin = await isCloudflareChallenge(page);
+    
+    if (hasChallengeAfterLogin) {
+      console.log('登录后出现 Cloudflare 挑战，等待通过...');
+      await waitForCloudflareChallenge(page, 30000);
+    }
+    
+    // 等待更长时间确保登录完成
+    await delay(5000);
+    
+    // 检查当前页面状态
     const currentUrl = page.url();
     const title = await page.title();
     
     console.log('登录后 URL:', currentUrl);
     console.log('登录后标题:', title);
     
+    // 如果还在登录页面，尝试直接访问目标页面
+    if (currentUrl.includes('/login') || await isCloudflareChallenge(page)) {
+      console.log('仍在登录页面或挑战页面，尝试直接访问目标服务器页面...');
+      
+      const targetUrl = `${process.env.WEBSITE_URL}/servers/45376`;
+      await page.goto(targetUrl, {
+        waitUntil: 'networkidle0',
+        timeout: 30000
+      });
+      
+      // 再次等待可能的挑战
+      await waitForCloudflareChallenge(page, 30000);
+      
+      await delay(3000);
+    }
+    
+    // 最终状态检查
+    const finalUrl = page.url();
+    const finalTitle = await page.title();
+    const finalContent = await page.content();
+    
+    console.log('最终 URL:', finalUrl);
+    console.log('最终标题:', finalTitle);
+    
     // 检查登录成功的指标
-    const pageContent = await page.content();
     const isSuccess = 
-      !currentUrl.includes('login') && 
-      !title.includes('Login') &&
-      !pageContent.includes('Invalid') &&
-      !pageContent.includes('Error') &&
-      !pageContent.includes('incorrect') &&
-      (pageContent.includes('Dashboard') || 
-       pageContent.includes('Server') || 
-       pageContent.includes('Welcome') ||
-       pageContent.includes('Betadash') ||
-       pageContent.includes('Lunes') ||
-       pageContent.includes('Panel'));
+      (finalUrl.includes('/servers/') || 
+       finalUrl.includes('/dashboard') ||
+       !finalUrl.includes('/login')) &&
+      !finalTitle.includes('Just a moment') &&
+      (finalContent.includes('Server Control') || 
+       finalContent.includes('Betadash') ||
+       finalContent.includes('Lunes') ||
+       finalContent.includes('Panel') ||
+       finalContent.includes('Dashboard'));
     
     if (isSuccess) {
       await sendTelegramMessage(process.env.TELEGRAM_BOT_TOKEN, process.env.TELEGRAM_CHAT_ID, 
-        `*登录成功！*\n时间: ${new Date().toISOString()}\n页面: ${currentUrl}\n标题: ${title}`);
+        `*登录成功！*\n时间: ${new Date().toISOString()}\n最终页面: ${finalUrl}\n标题: ${finalTitle}`);
       console.log('登录成功！');
     } else {
       // 检查是否有错误信息
@@ -278,8 +293,10 @@ async function login() {
       
       if (hasError) {
         throw new Error(`登录失败: ${hasError}`);
+      } else if (await isCloudflareChallenge(page)) {
+        throw new Error('登录被 Cloudflare 挑战阻挡');
       } else {
-        throw new Error(`登录状态不确定。URL: ${currentUrl}, 标题: ${title}`);
+        throw new Error(`登录状态不确定。最终 URL: ${finalUrl}, 标题: ${finalTitle}`);
       }
     }
 
