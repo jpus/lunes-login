@@ -16,18 +16,9 @@ async function sendTelegramMessage(botToken, chatId, message) {
 async function simulateHumanBehavior(page) {
   console.log('开始模拟人类行为...');
   
-  // 随机移动鼠标
-  const viewport = page.viewport();
-  for (let i = 0; i < 3; i++) {
-    const x = Math.floor(Math.random() * viewport.width);
-    const y = Math.floor(Math.random() * viewport.height);
-    await page.mouse.move(x, y);
-    await page.waitForTimeout(200 + Math.random() * 300);
-  }
-  
   // 随机滚动页面
   await page.evaluate(() => {
-    window.scrollTo(0, Math.random() * 500);
+    window.scrollTo(0, Math.random() * 300);
   });
   await page.waitForTimeout(500 + Math.random() * 1000);
   
@@ -35,7 +26,7 @@ async function simulateHumanBehavior(page) {
 }
 
 // 等待 Cloudflare 挑战通过
-async function waitForCloudflareChallenge(page, timeout = 30000) {
+async function waitForCloudflareChallenge(page, timeout = 45000) {
   console.log('等待 Cloudflare 挑战...');
   
   const startTime = Date.now();
@@ -44,28 +35,23 @@ async function waitForCloudflareChallenge(page, timeout = 30000) {
     // 检查是否还在挑战页面
     const title = await page.title();
     const url = page.url();
+    const pageContent = await page.content();
     
-    // 如果页面标题不包含挑战相关关键词，且URL不是挑战页面，则认为通过
-    if (!title.includes('Checking') && 
+    // 如果页面标题不包含挑战相关关键词，且页面内容包含登录表单或仪表板，则认为通过
+    if ((!title.includes('Checking') && 
         !title.includes('Please Wait') && 
-        !url.includes('challenges') &&
-        title !== 'Just a moment...') {
+        !title.includes('Just a moment') &&
+        !url.includes('challenges')) ||
+        pageContent.includes('email') ||
+        pageContent.includes('password') ||
+        pageContent.includes('Login') ||
+        pageContent.includes('Dashboard')) {
       console.log('Cloudflare 挑战已通过');
       return true;
     }
     
-    // 检查是否有验证码元素
-    const hasChallenge = await page.evaluate(() => {
-      return document.querySelector('.cf-challenge') !== null || 
-             document.querySelector('#challenge-form') !== null ||
-             document.querySelector('.turnstile-wrapper') !== null;
-    });
-    
-    if (!hasChallenge) {
-      console.log('未检测到挑战元素，继续等待...');
-    }
-    
-    await page.waitForTimeout(2000);
+    console.log(`等待挑战中... (${Date.now() - startTime}ms)`);
+    await page.waitForTimeout(3000);
   }
   
   throw new Error(`Cloudflare 挑战超时 (${timeout}ms)`);
@@ -73,13 +59,20 @@ async function waitForCloudflareChallenge(page, timeout = 30000) {
 
 async function login() {
   const browser = await puppeteer.launch({
-    headless: false, // 设置为 false 以便调试，生产环境可改回 true
+    headless: 'new', // 使用新的 headless 模式
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
       '--disable-gpu',
-      '--disable-blink-features=AutomationControlled', // 隐藏自动化特征
+      '--disable-blink-features=AutomationControlled',
+      '--disable-features=VizDisplayCompositor',
+      '--disable-software-rasterizer',
+      '--disable-web-security',
+      '--disable-features=site-per-process',
+      '--disable-background-timer-throttling',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-renderer-backgrounding',
       '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     ]
   });
@@ -100,80 +93,149 @@ async function login() {
       get: () => ['zh-CN', 'zh', 'en'],
     });
   });
-  
-  // 设置更真实的用户代理和视口
-  await page.setViewport({
-    width: 1920,
-    height: 1080,
-    deviceScaleFactor: 1,
-  });
 
   try {
     console.log('正在访问网站...');
+    
+    // 先访问一个中性页面，让 Cloudflare 先验证
+    await page.goto('https://www.google.com', { 
+      waitUntil: 'networkidle0',
+      timeout: 30000 
+    });
+    
+    await page.waitForTimeout(2000);
+    
+    // 现在访问目标网站
     await page.goto(process.env.WEBSITE_URL, { 
-      waitUntil: 'networkidle2',
+      waitUntil: 'networkidle0',
       timeout: 60000 
     });
 
-    // 等待可能的 Cloudflare 挑战
+    // 等待 Cloudflare 挑战
     await waitForCloudflareChallenge(page);
     
     // 模拟人类行为
     await simulateHumanBehavior(page);
     
-    // 等待登录表单加载
+    // 等待登录表单加载，使用多种选择器
     console.log('等待登录表单...');
-    await page.waitForSelector('#email', { timeout: 15000 });
-    await page.waitForSelector('#password', { timeout: 15000 });
     
-    // 模拟人类输入
-    console.log('输入邮箱...');
-    await page.type('#email', process.env.USERNAME, { 
-      delay: 100 + Math.random() * 200 
-    });
+    // 尝试多种选择器
+    const emailSelectors = ['#email', 'input[type="email"]', 'input[name="email"]', '[id*="email"]'];
+    const passwordSelectors = ['#password', 'input[type="password"]', 'input[name="password"]', '[id*="password"]'];
+    
+    let emailField = null;
+    let passwordField = null;
+    
+    for (const selector of emailSelectors) {
+      try {
+        await page.waitForSelector(selector, { timeout: 5000 });
+        emailField = selector;
+        break;
+      } catch (e) {
+        // 继续尝试下一个选择器
+      }
+    }
+    
+    for (const selector of passwordSelectors) {
+      try {
+        await page.waitForSelector(selector, { timeout: 5000 });
+        passwordField = selector;
+        break;
+      } catch (e) {
+        // 继续尝试下一个选择器
+      }
+    }
+    
+    if (!emailField || !passwordField) {
+      // 如果没找到标准选择器，尝试通过页面内容查找
+      const pageContent = await page.content();
+      if (pageContent.includes('@') || pageContent.includes('user') || pageContent.includes('login')) {
+        console.log('检测到登录页面但未找到标准表单，尝试继续...');
+      } else {
+        throw new Error('未找到登录表单');
+      }
+    }
+    
+    if (emailField) {
+      console.log('输入邮箱...');
+      await page.click(emailField, { delay: 100 });
+      await page.waitForTimeout(500);
+      
+      // 清空字段并输入
+      await page.evaluate((selector) => {
+        document.querySelector(selector).value = '';
+      }, emailField);
+      
+      await page.type(emailField, process.env.USERNAME, { 
+        delay: 50 + Math.random() * 100 
+      });
+    }
     
     await page.waitForTimeout(1000 + Math.random() * 1000);
     
-    console.log('输入密码...');
-    await page.type('#password', process.env.PASSWORD, { 
-      delay: 80 + Math.random() * 150 
-    });
+    if (passwordField) {
+      console.log('输入密码...');
+      await page.click(passwordField, { delay: 100 });
+      await page.waitForTimeout(500);
+      
+      await page.evaluate((selector) => {
+        document.querySelector(selector).value = '';
+      }, passwordField);
+      
+      await page.type(passwordField, process.env.PASSWORD, { 
+        delay: 50 + Math.random() * 100 
+      });
+    }
     
     // 再次模拟人类行为
     await simulateHumanBehavior(page);
     
-    // 等待可能的 Turnstile 验证
-    console.log('等待可能的验证...');
-    await page.waitForTimeout(5000);
+    console.log('寻找登录按钮...');
     
-    // 检查是否有 Turnstile 验证
-    const hasTurnstile = await page.evaluate(() => {
-      return document.querySelector('textarea[name="cf-turnstile-response"]') !== null ||
-             document.querySelector('.cf-turnstile') !== null;
-    });
+    // 尝试多种登录按钮选择器
+    const submitSelectors = [
+      'button[type="submit"]',
+      'input[type="submit"]',
+      'button[type="button"]',
+      '.btn',
+      '.button',
+      '[class*="login"]',
+      '[class*="submit"]',
+      '[onclick*="login"]'
+    ];
     
-    if (hasTurnstile) {
-      console.log('检测到 Turnstile 验证，等待手动解决...');
-      await sendTelegramMessage(process.env.TELEGRAM_BOT_TOKEN, process.env.TELEGRAM_CHAT_ID, 
-        `*检测到验证码*\\n请手动完成验证，脚本将在 30 秒后继续...`);
-      
-      // 等待用户手动完成验证
-      await page.waitForTimeout(30000);
+    let submitButton = null;
+    for (const selector of submitSelectors) {
+      const button = await page.$(selector);
+      if (button) {
+        const isVisible = await button.isIntersectingViewport();
+        if (isVisible) {
+          submitButton = selector;
+          break;
+        }
+      }
     }
     
-    console.log('点击登录按钮...');
-    await page.click('button[type="submit"]');
+    if (!submitButton) {
+      // 如果没找到按钮，尝试通过表单提交
+      const form = await page.$('form');
+      if (form) {
+        console.log('通过表单提交登录...');
+        await form.evaluate(form => form.submit());
+      } else {
+        throw new Error('未找到登录按钮或表单');
+      }
+    } else {
+      console.log('点击登录按钮...');
+      await page.click(submitButton);
+    }
     
-    // 等待导航完成
+    // 等待页面变化
     console.log('等待登录结果...');
-    await page.waitForNavigation({ 
-      waitUntil: 'networkidle2', 
-      timeout: 15000 
-    }).catch(() => {
-      console.log('导航超时，但可能已登录成功');
-    });
+    await page.waitForTimeout(8000);
     
-    // 检查登录是否成功
+    // 检查是否重定向
     const currentUrl = page.url();
     const title = await page.title();
     
@@ -181,44 +243,56 @@ async function login() {
     console.log('登录后标题:', title);
     
     // 检查登录成功的指标
-    const isSuccess = await page.evaluate(() => {
-      // 检查是否有错误消息
-      const errorMsg = document.querySelector('.error') || 
-                      document.querySelector('.alert-danger') ||
-                      document.querySelector('[class*="error"]');
-      
-      // 检查是否有成功指标（如仪表板、欢迎信息等）
-      const successIndicator = document.querySelector('.dashboard') ||
-                              document.querySelector('.server-list') ||
-                              document.querySelector('[class*="welcome"]') ||
-                              document.body.innerText.includes('Server Control') ||
-                              document.body.innerText.includes('Dashboard');
-      
-      return !errorMsg && successIndicator;
-    });
+    const pageContent = await page.content();
+    const isSuccess = 
+      !currentUrl.includes('login') && 
+      !title.includes('Login') &&
+      !pageContent.includes('Invalid') &&
+      !pageContent.includes('Error') &&
+      !pageContent.includes('incorrect') &&
+      (pageContent.includes('Dashboard') || 
+       pageContent.includes('Server') || 
+       pageContent.includes('Welcome') ||
+       pageContent.includes('Betadash') ||
+       pageContent.includes('Lunes') ||
+       pageContent.includes('Panel'));
     
-    if (isSuccess || (!currentUrl.includes('login') && !title.includes('Login'))) {
+    if (isSuccess) {
       await sendTelegramMessage(process.env.TELEGRAM_BOT_TOKEN, process.env.TELEGRAM_CHAT_ID, 
-        `*登录成功！*\\n时间: ${new Date().toISOString()}\\n页面: ${currentUrl}\\n标题: ${title}`);
+        `*登录成功！*\n时间: ${new Date().toISOString()}\n页面: ${currentUrl}\n标题: ${title}`);
       console.log('登录成功！');
     } else {
-      throw new Error(`登录可能失败。当前 URL: ${currentUrl}, 标题: ${title}`);
+      // 检查是否有错误信息
+      const hasError = await page.evaluate(() => {
+        const errorSelectors = ['.error', '.alert-danger', '.text-danger', '[class*="error"]'];
+        for (const selector of errorSelectors) {
+          const element = document.querySelector(selector);
+          if (element && element.textContent) return element.textContent;
+        }
+        return null;
+      });
+      
+      if (hasError) {
+        throw new Error(`登录失败: ${hasError}`);
+      } else {
+        throw new Error(`登录状态不确定。URL: ${currentUrl}, 标题: ${title}`);
+      }
     }
 
     console.log('脚本执行完成。');
     
   } catch (error) {
     // 保存截屏和页面HTML用于调试
-    await page.screenshot({ path: 'login-failure.png', fullPage: true });
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    await page.screenshot({ path: `login-failure-${timestamp}.png`, fullPage: true });
     const htmlContent = await page.content();
-    require('fs').writeFileSync('login-debug.html', htmlContent);
+    require('fs').writeFileSync(`login-debug-${timestamp}.html`, htmlContent);
     
     await sendTelegramMessage(process.env.TELEGRAM_BOT_TOKEN, process.env.TELEGRAM_CHAT_ID, 
-      `*登录失败！*\\n时间: ${new Date().toISOString()}\\n错误: ${error.message}\\n请检查 Artifacts 中的 login-debug`);
+      `*登录失败！*\n时间: ${new Date().toISOString()}\n错误: ${error.message}\n已保存调试信息`);
     
     console.error('登录失败：', error.message);
-    console.error('截屏已保存为 login-failure.png');
-    console.error('页面HTML已保存为 login-debug.html');
+    console.error('截屏和HTML已保存');
     throw error;
   } finally {
     await browser.close();
